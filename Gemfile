@@ -1,0 +1,11 @@
+source :rubygems
+gem 'dm-core'
+gem 'dm-sqlite-adapter'
+gem 'dm-migrations'
+gem 'dm-aggregates'
+gem 'awesome_print'
+gem 'chronic_duration'
+gem 'activesupport', require: 'active_support/core_ext'
+gem 'i18n'
+gem 'pdf-reader', path: 'pdf-reader'
+gem 'pry'
