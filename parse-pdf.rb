@@ -20,106 +20,169 @@ class Receiver
   RECEIVER = /\d{11,12}$/
   DURATION = /^\d{2}:\d{2}:\d{2}$/
   DATE = /^\d{1,2}\.\d{1,2}\.$/
+  PRICE = /^\d+,\d+$/
+  AMOUNT = /^\d$/
 
-  #def respond_to?(*)
-  #  true
-  #end
+  class StateMachine
+    attr_reader :last
 
-  #def method_missing(method, *args)
-  #  # puts [method, args].inspect
-  #end
+    def initialize
+      @hash = {}
+    end
+
+    def reset!
+      @last = nil
+      @hash = {}
+    end
+
+    def set(state, value)
+      @hash.store(state.to_sym, value)
+      @last = state.to_sym
+      puts "STATE #{state} = #{value}"
+    end
+
+    def get(state)
+      @hash.fetch(state) { nil }
+    end
+
+    def has?(state)
+      @hash.has_key?(state)
+    end
+
+    def ==(other)
+      last == other or super
+    end
+    alias :=== :==
+  end
+
+  def initialize
+    @numbers = Set.new
+    @state = StateMachine.new
+  end
+
+  def self.states(*states)
+    states.each do |name|
+      self.state name
+    end
+  end
+
+  def self.state(state)
+    define_method("#{state}=") do |value|
+      @state.set(state, value)
+    end
+
+    define_method(state) do
+      @state.get(state)
+    end
+
+    define_method("#{state}?") do
+      @state.has?(state)
+    end
+  end
+
+  states :kind, :date, :time, :duration, :receiver, :comment, :amount, :for_free, :price
+  attr_reader :state, :numbers, :number
+
+  def number=(number)
+    @number = number
+    numbers << number
+  end
 
   def begin_text_object
-    @object = ""
+    @text_object = true
   end
 
   def end_text_object
-    puts @object
-  ensure
-    @object = nil
+    @text_object = nil
   end
 
-  def numbers
-    @numbers ||= Set.new
-  end
-
-  def reset!
-    @kind = @to = @duration = @last = @date = @comment = @time = nil
-  end
   def show_text(text)
     text = convert(text).strip
 
     return if text.blank?
 
-    if @object and text.length == 1
-      @object << text
-      return
+    if number or kind?
+      puts text
     end
 
-    puts text
-
     case text
+
     when NUMBER
-      reset!
-      @number = numbers.find{|n| n == text} || Number.new(text)
-      numbers << @number
-      @last = :number
+      self.number = numbers.find{|n| n == text} || Number.new(text)
+      state.reset!
+
+    when KIND
+      state.reset!
+      puts "KIND: #{text}"
+      self.kind = text.to_sym
+
+    when GROUP_CALLS
+      state.reset!
+      self.kind = :voice
+
     when DATE
-      if @last == :kind
-        @date = text
-        @last = :date
+      if state == :kind
+        self.date = text
       else
-        @last = nil
         raise UnknownState.new(text)
       end
-    when KIND
-      puts "KIND: #{text}"
-      @kind = text.to_sym
-      @last = :kind
-    when GROUP_CALLS
-      @kind = :voice
-      @last = :kind
+
     when RECEIVER
-      @to = text
-      @last = :receiver
+      self.receiver = text
+
     when DURATION
-      if @last == :date
-        @time = text
-        @last = :time
+      case state.last
+      when :date
+        self.time = text
+      when :receiver
+        self.duration = text
+      when :comment
+        self.for_free = text
       else
-        @duration = text
-        @last = :duration
+        puts "UNKNOWN (#{state.last}): #{text}"
       end
+
+    when PRICE
+      self.price = text
+
+    when AMOUNT
+      self.amount = text
 
     else
 
-      if @last == :duration
-        @comment = text
-        @last = :comment
+      case state.last
+      when :duration, :receiver
+        self.comment = text
+
       else
         puts "UNKNOWN: #{text}"
       end
     end
 
-    case @kind
+    return unless price?
+
+    case kind
 
     when :voice
-      if @to && @duration
-        parts = [2012, @date.split(".").reverse, @time.split(":")].flatten
-        date = DateTime.new(*parts.map(&:to_i))
-        @number.calls << Call.new(@to, date, @duration)
-        reset!
+      if receiver? and duration? and comment?
+        number.calls << Call.new(receiver, timestamp, duration, price, for_free, comment)
+        state.reset!
       end
 
     when :sms
-      if @to
-        @number.sms << SMS.new(@to)
-        reset!
+      if receiver?
+        number.sms << SMS.new(receiver, timestamp, amount, price, comment)
+        state.reset!
       end
 
     when :connect
       # TODO: implement data
     end
+  end
+
+  def timestamp
+    parts = [2012, date.split(".").reverse, time.split(":")].flatten
+    date = DateTime.new(*parts.map(&:to_i))
   end
 
   def convert(text)
@@ -128,48 +191,114 @@ class Receiver
 end
 
 class Number
+
+  attr_reader :number, :calls, :sms
+
   def initialize(number)
     @number = number
+    @calls = []
+    @sms = []
   end
 
-  def calls
-    @calls ||= []
-  end
-
-  def sms
-    @sms ||= []
+  def number
+    @number.tr(' ', '')
   end
 
   def ==(other)
     @number == other or super
   end
+
+  def report
+    call_groups = calls.group_by(&:comment)
+    sms_groups = sms.group_by(&:comment)
+
+    {
+      calls: Hash[call_groups.map{ |key, calls|
+              [key, [calls.count, calls.map(&:duration).reduce(:+)] ] }],
+      sms: Hash[sms_groups.map{ |key, sms| [key, sms.count] } ]
+    }
+  end
 end
 
 class Call
-  attr_reader :number
+  attr_reader :number, :date, :duration, :price, :for_free, :comment
 
-  def initialize(number, date, duration)
+  def initialize(number, date, duration, price, for_free, comment)
     @number = number
     @date = date
-    @duration = duration
+    @duration = Duration.new(duration)
+    @comment = comment
+    @price = price && price.tr(',', '.').to_f
+
+    @for_free = for_free && Duration.new(for_free)
+
+    puts "New call to #{number} on #{date} took #{duration}"
   end
 
-  def duration
-    hours, minutes, seconds = @duration.split(':').map(&:to_i)
+  def paid?
+    for_free || price > 0
+  end
 
-    hours = ActiveSupport::Duration.new(hours * 3600, [[:seconds, hours * 3600]])
-    minutes = ActiveSupport::Duration.new(minutes, [[:minutes, minutes]])
-    seconds = ActiveSupport::Duration.new(seconds, [[:seconds, seconds]])
+  class Duration
+    attr_reader :hours, :minutes, :seconds
 
-    hours + minutes + seconds
+    def initialize(duration)
+      @hours, @minutes, @seconds = duration.split(':').map(&:to_i)
+    end
+
+    def inspect
+      "#<#{self.class}:#{object_id} #{to_s}>"
+    end
+
+    def to_s
+      "%02d:%02d:%02d" % [ hours, minutes, seconds ]
+    end
+
+    def seconds=(value)
+      @seconds = value.to_i.remainder(60)
+      self.minutes += value.to_i/60
+    end
+
+    def minutes=(value)
+      @minutes = value.to_i.remainder(60)
+      self.hours += value.to_i/60
+    end
+
+    def hours=(value)
+      @hours = value
+    end
+
+    def +(other)
+      copy = dup
+
+      if Duration === other
+        copy.hours += other.hours
+        copy.minutes += other.minutes
+        copy.seconds += other.seconds
+      else
+        copy.seconds += other
+      end
+
+      copy
+    end
   end
 end
 
 class SMS
-  attr_reader :number
+  attr_reader :number, :date, :price, :comment, :amount
 
-  def initialize(number)
+  def initialize(number, date, amount, price, comment)
     @number = number
+    @date = date
+    @price = price && price.tr(',', '.').to_f
+    @comment = comment
+    @amount = amount && amount.to_i
+
+    puts "New SMS to #{number} on #{date}"
+  end
+
+  def paid?
+    price > 0 or amount
   end
 end
 
