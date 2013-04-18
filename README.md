@@ -5,6 +5,14 @@ So this script parses the PDF and outputs the values as csv.
 Of course it can be updated to do whatever report you need.
 
 
+# Is this any good?
+Sure! If you want to transfer you number to different operator you need data
+to back up your decision. This provides the data for you.
+Make a nice spreadsheet with all the variants and you are good!
+
+If you have detailed invoice with all the calls you made, this can also parse it.
+But there is no reporter for this kind of invoice.
+
 ## How to use it?
 
 * `bundle install`
