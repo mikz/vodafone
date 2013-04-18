@@ -15,6 +15,7 @@ But there is no reporter for this kind of invoice.
 
 ## How to use it?
 
+* `git submodule add pdf-reader https://github.com/mikz/pdf-reader.git` (adds some aliases needed by vodafone pdf)
 * `bundle install`
 * `./parse-pdf.rb invoices/*.pdf`
 * profit!
