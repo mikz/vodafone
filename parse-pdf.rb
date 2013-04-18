@@ -151,7 +151,7 @@ class Receiver
       self.service = number && number.service(:voice)
     when 'SMS služby'
       self.service = number && number.service(:sms)
-    when 'Data'
+    when 'Data', 'Připojení ze zahraničí'
       self.service = number && number.service(:data)
     when 'Skupinová volání'
       self.service = number && number.service(:groups)
@@ -246,6 +246,8 @@ class Receiver
         group && amount && price && duration and service.sum?(group) || vat
       when :sms
         group && amount && price and service.sum?(group) || vat
+      when :data
+        group && amount && price
       end
 
       if valid
@@ -340,7 +342,6 @@ class Number
       report.calls = service(:voice).groups.select(&:paid?).map do |group|
         [ group.name, [ group.amount, group.duration ]]
       end
-      binding.pry if report.calls.empty?
 
       report.calls_sum = service(:voice).sum
 
@@ -351,6 +352,18 @@ class Number
     end
   end
 
+  def inline_report
+    InlineReport.new.tap do |report|
+      report.number = self
+      report.calls = service(:voice).groups.select(&:paid?).map do |group|
+        [group.name, group.duration]
+      end
+
+      report.sms = service(:sms).groups.map do |group|
+        [ group.name, group.amount]
+      end.compact
+    end
+  end
 end
 
 class Report
@@ -368,6 +381,25 @@ class Report
       calls_sum && calls_sum.duration.to_minutes,
       calls_sum && calls_sum.price.round.to_i
     ]
+  end
+end
+
+class InlineReport
+  attr_accessor :number, :sms, :calls
+
+  def to_csv
+    caller = number.number
+    rows = []
+
+    calls.each do |(name, duration)|
+      rows << [ caller, 'voice', name, duration.to_minutes ]
+    end
+
+    sms.each do |(name, amount)|
+      rows << [ caller, 'sms', name, amount]
+    end
+
+    rows
   end
 end
 
@@ -519,8 +551,20 @@ ARGV.each do |file|
   end
 
   csv << [file] if ENV['DEBUG']
+  type = 'inline'
+
   receiver.numbers.each do |number|
-    csv << number.group_report.to_csv
+    case type
+      when 'group'
+        csv << number.group_report.to_csv
+      when 'inline'
+        number.inline_report.to_csv.each do |row|
+          csv << row
+        end
+      else
+        raise "Unknown type: #{type}"
+    end
+
   end
 end
 
